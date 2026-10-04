@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>O Sol e a Lua</title>
+<style>
+:root{color-scheme:dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:#03040a;color:#e8eaf6;font-family:system-ui,sans-serif;overflow:hidden}
+canvas{position:fixed;inset:0;width:100%;height:100%}
+#cap{position:fixed;left:0;right:0;top:calc(7% + env(safe-area-inset-top,0px));text-align:center;font-size:14px;letter-spacing:.2em;text-transform:uppercase;color:#fff1d6;opacity:0;transition:opacity .8s;padding:0 16px;text-shadow:0 0 14px #000,0 0 4px #000}
+#start{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#03040a;z-index:5;text-align:center;padding:24px}
+#start h1{font-weight:300;letter-spacing:.3em;font-size:20px;margin:0}
+button{background:none;border:1px solid #ffc680;color:#ffe3c0;padding:12px 28px;border-radius:30px;font-size:15px;letter-spacing:.15em;cursor:pointer}
+button:hover{background:#ffc68022}
+#code{position:fixed;left:0;right:0;bottom:calc(4% + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;align-items:center;gap:14px;opacity:0;transition:opacity 2s;pointer-events:none}
+#code.on{opacity:1}
+pre{margin:0;background:rgba(14,16,26,.86);border-radius:14px;padding:20px 24px;font:clamp(12px,3.5vw,16px)/1.6 ui-monospace,Menlo,Consolas,monospace;max-width:92vw;overflow-x:auto;box-shadow:0 0 60px #ff9a3d33;white-space:pre}
+.c{color:#6c7289}.k{color:#ff7b72}.b{color:#79c0ff}.s{color:#a5d6a7}.f{color:#d2a8ff}
+.cur{display:inline-block;width:8px;height:1.1em;background:#e8eaf6;vertical-align:text-bottom;animation:bl 1s steps(1) infinite}
+@keyframes bl{50%{opacity:0}}
+#again{opacity:0;transition:opacity 1s;pointer-events:auto}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="cap"></div>
+<div id="code"><pre id="pre"></pre><button id="again">↻ rever</button></div>
+<div id="start"><h1>SOL &amp; LUA</h1><div style="color:#9aa0c0;font-size:14px;max-width:280px">Dizem que eles nunca se encontram…</div><button id="go" disabled>PREPARANDO…</button></div>
+
+<script>
+// ✏️ Personalize aqui
+const NOME = "meu amor";
+const CODIGO = `# sol e lua só se encontram\n# no eclipse... mas eu te encontro\n# todo dia\n\namanheceu = True\n\nif amanheceu:\n    print("Bom dia, ${NOME}!")\n    print("Que seu dia seja lindo igual vc :) ")`;
+
+const cv = document.getElementById('cv'), g = cv.getContext('2d');
+const cap = document.getElementById('cap'), codeEl = document.getElementById('code'), pre = document.getElementById('pre'), again = document.getElementById('again');
+const R = Math.random, TAU = 6.283185, D1 = 19, P2 = 14, TOT = D1 + 1.5 + P2/2;
+const cl = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v)), lerp = (a, b, k) => a + (b - a)*k;
+const sm = (a, b, v) => { v = cl((v - a)/(b - a)); return v*v*(3 - 2*v); };
+let W, H, DPR, cx, cy, m, skyc, tws = [], hills = [], t0 = null, running = false, typer = null, capIdx = 0;
+const mk = (w, h, fn) => { const c = document.createElement('canvas'); c.width = w; c.height = h; fn(c.getContext('2d')); return c; };
+
+// ---------- ruído e texturas procedurais ----------
+const L3 = (a, b, t) => a + (b - a)*t, nrm = (a, b, c) => { const l = Math.hypot(a, b, c) || 1; return [a/l, b/l, c/l]; };
+const hash = (x, y, z) => { let h = (Math.imul(x, 374761393) + Math.imul(y, 668265263) + Math.imul(z, 2147483647))|0; h = Math.imul(h ^ (h >>> 13), 1274126177); return ((h ^ (h >>> 16)) >>> 0)/4294967295; };
+function vn(x, y, z){
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), xf = x - xi, yf = y - yi, zf = z - zi, u = xf*xf*(3 - 2*xf), v = yf*yf*(3 - 2*yf), w = zf*zf*(3 - 2*zf);
+  return L3(L3(L3(hash(xi, yi, zi), hash(xi+1, yi, zi), u), L3(hash(xi, yi+1, zi), hash(xi+1, yi+1, zi), u), v), L3(L3(hash(xi, yi, zi+1), hash(xi+1, yi, zi+1), u), L3(hash(xi, yi+1, zi+1), hash(xi+1, yi+1, zi+1), u), v), w);
+}
+const fbm = (x, y, z, o) => { let s = 0, a = .5, f = 1, n = 0; for (let i = 0; i < o; i++){ s += a*vn(x*f, y*f, z*f); n += a; f *= 2.03; a *= .5; } return s/n; };
+const EW = 384, EH = 192, MS = 512;
+let eCol, eLand, eLight, eCloud, moonH, moonA, sunTex, corTex, moonFull, eCv, mCv, grainPat, vig;
+
+function renderMoon(cv2, S, L, amb){   // esfera com relevo (bump) e iluminação 3D
+  const x2 = cv2.getContext('2d'), img = x2.createImageData(S, S), d = img.data, st = Math.max(1, Math.round(MS/S/2));
+  for (let py = 0; py < S; py++) for (let px = 0; px < S; px++){
+    const x = (px + .5)/S*2 - 1, y = (py + .5)/S*2 - 1, r2 = x*x + y*y; if (r2 >= 1) continue;
+    const nz = Math.sqrt(1 - r2), tx = cl(((x + 1)/2*MS)|0, st, MS - 1 - st), ty = cl(((y + 1)/2*MS)|0, st, MS - 1 - st), i = ty*MS + tx;
+    const gx = (moonH[i + st] - moonH[i - st])*MS/(4*st)*.8, gy = (moonH[i + st*MS] - moonH[i - st*MS])*MS/(4*st)*.8;
+    const nx = x - gx, ny = y - gy, nl = Math.hypot(nx, ny, nz), ndl = (nx*L[0] + ny*L[1] + nz*L[2])/nl;
+    const b = moonA[i]*(amb + (1 - amb)*Math.pow(Math.max(ndl, 0), .85)), o = (py*S + px)*4;
+    d[o] = 226*b; d[o+1] = 221*b; d[o+2] = 211*b; d[o+3] = 255*cl((1 - Math.sqrt(r2))*S/2, 0, 1);
+  }
+  x2.putImageData(img, 0, 0);
+}
+function renderEarth(cv2, S, L, spin){
+  const x2 = cv2.getContext('2d'), img = x2.createImageData(S, S), d = img.data, rp = S/2/1.12, cph = .866, sph = .5, ca = Math.cos(.41), sa = Math.sin(.41);
+  const hl_ = Math.hypot(L[0], L[1], L[2] + 1) || 1, hx = L[0]/hl_, hy = L[1]/hl_, hz = (L[2] + 1)/hl_;
+  for (let py = 0; py < S; py++) for (let px = 0; px < S; px++){
+    const x = (px + .5 - S/2)/rp, y = (py + .5 - S/2)/rp, r2 = x*x + y*y, o = (py*S + px)*4;
+    if (r2 <= 1){
+      const nz = Math.sqrt(1 - r2), X = x, Y = -y*cph + nz*sph, Z = y*sph + nz*cph, Xt = X*ca - Y*sa, Yt = X*sa + Y*ca;
+      const lat = Math.asin(cl(Yt, -1, 1)), lon = Math.atan2(Xt, Z) + spin, tj = Math.min(EH - 1, ((lat/Math.PI + .5)*EH)|0);
+      const k = tj*EW + Math.min(EW - 1, ((((lon/TAU)%1) + 1)%1*EW)|0), kc = tj*EW + Math.min(EW - 1, ((((lon + spin*.25)/TAU)%1 + 1)%1*EW)|0);
+      const ndl = x*L[0] + y*L[1] + nz*L[2], lit = Math.max(ndl, 0), tw = sm(-.1, .12, ndl), cc = eCloud[kc];
+      let r = lerp(eCol[k*3], 245, cc*.85), g2 = lerp(eCol[k*3+1], 245, cc*.85), b = lerp(eCol[k*3+2], 248, cc*.85);
+      const sh = .02 + lit, sp = eLand[k] ? 0 : Math.pow(Math.max(x*hx + y*hy + nz*hz, 0), 70)*.8*(1 - cc);
+      r = r*sh + sp*255; g2 = g2*sh + sp*255; b = b*sh + sp*255;
+      const nl = (1 - tw)*eLight[k]/255*(1 - cc*.7); r += nl*255; g2 += nl*190; b += nl*100;
+      const f = Math.pow(1 - nz, 3), at = f*(.1 + .9*cl(ndl + .35, 0, 1)); r += at*70; g2 += at*130; b += at*255;
+      d[o] = r; d[o+1] = g2; d[o+2] = b; d[o+3] = 255;
+    } else {
+      const rr = Math.sqrt(r2); if (rr < 1.12){ const hf = cl(((x*L[0] + y*L[1])/rr)*.8 + .4, 0, 1.2)*Math.exp(-(rr - 1)*22); d[o] = 90; d[o+1] = 150; d[o+2] = 255; d[o+3] = 255*cl(hf*.9, 0, 1); }
+    }
+  }
+  x2.putImageData(img, 0, 0);
+}
+
+function init(){
+  // Terra: continentes, oceanos, gelo, nuvens e luzes de cidades (ruído fractal sobre a esfera)
+  eCol = new Uint8Array(EW*EH*3); eLand = new Uint8Array(EW*EH); eLight = new Uint8Array(EW*EH); eCloud = new Float32Array(EW*EH);
+  for (let j = 0; j < EH; j++){
+    const lat = (j/EH - .5)*Math.PI, cs = Math.cos(lat), sn = Math.sin(lat), al = Math.abs(lat);
+    for (let i = 0; i < EW; i++){
+      const lon = i/EW*TAU, x = cs*Math.sin(lon), y = sn, z = cs*Math.cos(lon), k = j*EW + i, h = fbm(x*2.1 + 5, y*2.1, z*2.1, 6);
+      let r, g2, b;
+      if (h > .53){
+        eLand[k] = 1; const e = cl((h - .53)/.17), des = sm(.5, .62, fbm(x*3 + 40, y*3, z*3, 3))*(al > .18 && al < .75 ? 1 : .25);
+        r = lerp(58, 198, des); g2 = lerp(105, 170, des); b = lerp(48, 112, des);
+        if (e > .35){ const q = cl((e - .35)/.4); r = lerp(r, 125, q); g2 = lerp(g2, 108, q); b = lerp(b, 90, q); }
+        if (al > 1.2 || e > .92) r = g2 = b = 240;
+        else if (al > .15 && al < 1.1) eLight[k] = 255*sm(.58, .72, fbm(x*9 + 70, y*9, z*9, 4));
+      } else { const dp = cl((.53 - h)/.2); r = lerp(32, 6, dp); g2 = lerp(100, 28, dp); b = lerp(155, 80, dp); if (al > 1.3) r = g2 = b = 232; }
+      eCol[k*3] = r; eCol[k*3+1] = g2; eCol[k*3+2] = b;
+      eCloud[k] = sm(.54, .7, fbm(x*3.2 + 11, y*4.2 + 2, z*3.2, 6));
+    }
+  }
+  // Lua: relevo com crateras, mares e brilho de albedo
+  moonH = new Float32Array(MS*MS); moonA = new Float32Array(MS*MS).fill(.5);
+  for (let j = 0; j < MS; j++) for (let i = 0; i < MS; i++){
+    const x = (i/MS - .5)*2, y = (j/MS - .5)*2; if (x*x + y*y > 1) continue; const k = j*MS + i;
+    moonH[k] = (fbm(x*2.4 + 9, y*2.4, 2, 4) - .5)*.015 + (fbm(x*9, y*9, 6, 3) - .5)*.012;
+    moonA[k] = lerp(.95, .34, sm(.3, .7, (fbm(x*1.2 + 20, y*1.2, 5, 2) - .5)*5 + .5))*(.92 + .16*fbm(x*14, y*14, 1, 3));
+  }
+  for (let c = 0; c < 320; c++){
+    const r = Math.pow(R(), 3)*56 + 3, ang = R()*TAU, dist = Math.sqrt(R())*(MS/2 - r*.5), cx0 = MS/2 + Math.cos(ang)*dist, cy0 = MS/2 + Math.sin(ang)*dist, dep = r/(MS/2)*.13;
+    for (let yy = Math.max(1, (cy0 - r*1.3)|0); yy < Math.min(MS - 1, cy0 + r*1.3); yy++) for (let xx = Math.max(1, (cx0 - r*1.3)|0); xx < Math.min(MS - 1, cx0 + r*1.3); xx++){
+      const dd = Math.hypot(xx - cx0, yy - cy0)/r; if (dd > 1.3) continue; const k = yy*MS + xx;
+      moonH[k] += (dd < 1 ? -dep*(1 - dd*dd) : 0) + dep*.3*Math.exp(-Math.pow((dd - 1)/.2, 2)); moonA[k] += .08*Math.exp(-Math.pow((dd - 1)/.25, 2))*Math.min(1, r/25);
+    }
+  }
+  moonFull = mk(MS, MS, () => {}); renderMoon(moonFull, MS, nrm(-.35, -.25, .9), .03); mCv = mk(128, 128, () => {}); eCv = mk(176, 176, () => {});
+  // Sol: granulação, escurecimento do limbo e manchas
+  sunTex = mk(512, 512, () => {}); { const x2 = sunTex.getContext('2d'), img = x2.createImageData(512, 512), d = img.data, spots = [[-.28, .1, .04], [.3, -.18, .03]];
+    for (let py = 0; py < 512; py++) for (let px = 0; px < 512; px++){
+      const x = (px + .5)/256 - 1, y = (py + .5)/256 - 1, r2 = x*x + y*y; if (r2 >= 1) continue;
+      const mu = Math.sqrt(1 - r2), t = Math.pow(1 - mu, 1.3); let I = 1 - .5*Math.pow(1 - mu, 1.2) + (fbm(x*13, y*13, mu*2, 3) - .5)*.34 + (fbm(x*38, y*38, 1.7, 2) - .5)*.10, sp = 0;
+      spots.forEach(([a, b, rr]) => { const dd = Math.hypot(x - a, y - b)/rr; sp = Math.max(sp, dd < 1 ? 1 : dd < 2 ? (2 - dd)*.5 : 0); }); I *= 1 - sp*.65;
+      const o = (py*512 + px)*4; d[o] = 255*I; d[o+1] = (246 - 96*t)*I; d[o+2] = (228 - 175*t)*I; d[o+3] = 255*cl((1 - Math.sqrt(r2))*256, 0, 1);
+    } x2.putImageData(img, 0, 0); }
+  // Coroa solar: serpentinas equatoriais + raios finos, intensidade decaindo com a distância
+  corTex = mk(512, 512, () => {}); { const x2 = corTex.getContext('2d'), img = x2.createImageData(512, 512), d = img.data;
+    for (let py = 0; py < 512; py++) for (let px = 0; px < 512; px++){
+      const x = (px + .5 - 256)/64, y = (py + .5 - 256)/64, r = Math.max(1, Math.hypot(x, y)), th = Math.atan2(y, x), c = Math.cos(th), s2 = Math.sin(th);
+      const n1 = fbm(c*1.6 + 3, s2*1.6 + 7, 1.5, 3), ext = .5 + 2.6*Math.pow(c*c, 1.4)*(.6 + .8*n1) + .5*n1, xx = (r - 1)/ext, fr = .8 + .4*vn(c*9 + 1, s2*9 + 2, 4.1);
+      const I = (.8*Math.exp(-(r - 1)*9) + .55*Math.exp(-xx*1.9) + .22*Math.exp(-xx*.55))*fr*(1 - sm(2.9, 4, r)), q = cl(xx/2.5), o = (py*512 + px)*4;
+      d[o] = lerp(255, 200, q); d[o+1] = lerp(244, 215, q); d[o+2] = lerp(228, 255, q); d[o+3] = 255*cl(I, 0, 1);
+    } x2.putImageData(img, 0, 0); }
+  const gr = mk(128, 128, x => { for (let i = 0; i < 1800; i++){ x.fillStyle = `rgba(255,255,255,${R()})`; x.fillRect(R()*128, R()*128, 1.5, 1.5); } });
+  grainPat = g.createPattern(gr, 'repeat');
+}
+function post(){   // vinheta + grão de filme
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; g.drawImage(vig, 0, 0);
+  if (grainPat){ g.save(); g.translate((R()*128)|0, (R()*128)|0); g.globalAlpha = .06; g.fillStyle = grainPat; g.fillRect(-128, -128, W + 256, H + 256); g.restore(); }
+}
+
+function resize(){
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = cv.width = innerWidth*DPR; H = cv.height = innerHeight*DPR; cx = W/2; cy = H/2; m = Math.min(W, H);
+  skyc = mk(W, H, x => {   // céu estático: Via Láctea + estrelas
+    const L = Math.hypot(W, H); x.save(); x.translate(W/2, H/2); x.rotate(-.6);
+    for (let i = 0; i < 26; i++){ const px = (i/25 - .5)*L*1.1, b = x.createRadialGradient(px, 0, 0, px, 0, m*.5); b.addColorStop(0, 'rgba(150,160,220,.06)'); b.addColorStop(1, 'rgba(150,160,220,0)'); x.fillStyle = b; x.fillRect(px - m*.5, -m*.5, m, m); }
+    for (let i = 0; i < 2200; i++){ x.fillStyle = `rgba(255,255,255,${.1 + R()*.3})`; x.fillRect((R() - .5)*L, (R() + R() + R() - 1.5)*m*.28, DPR, DPR); }
+    x.restore();
+    for (let i = 0; i < 300; i++){ x.fillStyle = `hsla(${[30, 210, 50][(R()*3)|0]},60%,88%,${.3 + R()*.6})`; x.beginPath(); x.arc(R()*W, R()*H, (R()*1.1 + .3)*DPR, 0, TAU); x.fill(); }
+  });
+  vig = mk(W, H, x => { const gr = x.createRadialGradient(W/2, H/2, m*.35, W/2, H/2, Math.hypot(W, H)*.55); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(1, 'rgba(0,0,0,.55)'); x.fillStyle = gr; x.fillRect(0, 0, W, H); });
+  tws = Array.from({length: 45}, () => ({x: R()*W, y: R()*H, r: (R()*1.2 + .8)*DPR, p: R()*TAU, s: R()*2 + 1}));
+  hills = []; for (let x = 0; x <= W + 8*DPR; x += 6*DPR) hills.push([x, H*.9 - (Math.sin(x*.004/DPR) * .02 + Math.sin(x*.011/DPR + 1)*.012)*H - (R() < .3 ? R()*H*.03 : 0)]);
+}
+addEventListener('resize', resize); resize();
+
+// ---------- utilidades de desenho ----------
+function glow(x, y, r, col, a){
+  const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, `rgba(${col},${a})`); gr.addColorStop(1, `rgba(${col},0)`);
+  g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+}
+function spr(img, x, y, r, rot = 0){ g.save(); g.translate(x, y); g.rotate(rot); g.drawImage(img, -r, -r, 2*r, 2*r); g.restore(); }
+function sky(t, k){
+  g.globalCompositeOperation = 'source-over'; g.globalAlpha = k; g.drawImage(skyc, 0, 0);
+  g.fillStyle = '#fff'; tws.forEach(s => { g.globalAlpha = k*(.3 + .7*Math.sin(t*s.s + s.p)**2); g.beginPath(); g.arc(s.x, s.y, s.r, 0, TAU); g.fill(); });
+  g.globalAlpha = 1;
+}
+function shade(x, y, r, lx, ly, soft, dark){   // sombra do lado oposto ao Sol
+  g.save(); g.beginPath(); g.arc(x, y, r, 0, TAU); g.clip();
+  const gr = g.createLinearGradient(x + lx*r, y + ly*r, x - lx*r, y - ly*r);
+  gr.addColorStop(0, 'rgba(0,0,8,0)'); gr.addColorStop(.5 - soft, 'rgba(0,0,8,0)'); gr.addColorStop(.5 + soft, `rgba(0,0,8,${dark*.9})`); gr.addColorStop(1, `rgba(0,0,8,${dark})`);
+  g.fillStyle = gr; g.fillRect(x - r, y - r, 2*r, 2*r); g.restore();
+}
+
+// ---------- cena 1: perseguição (visão orbital) ----------
+function s1(t){
+  g.globalCompositeOperation = 'source-over'; g.fillStyle = '#03040a'; g.fillRect(0, 0, W, H); sky(t, 1);
+  const tau = .5, cph = .866, RS = .4*m, RM = .2*m, er = .07*m, gap = Math.PI*(1 - sm(11, 18, t)), ths = Math.PI + .611*t, thm = ths + gap;
+  const Xs = Math.cos(ths)*RS, Zs = Math.sin(ths)*RS, Xm = Math.cos(thm)*RM, Zm = Math.sin(thm)*RM;
+  const S = {x: cx + Xs, y: cy + Zs*tau, d: Zs, r: .075*m*(1 + .2*Zs/RS)}, M = {x: cx + Xm, y: cy + Zm*tau, d: Zm, r: .035*m*(1 + .2*Zm/RM)};
+  g.setLineDash([4*DPR, 9*DPR]); g.lineWidth = DPR; g.strokeStyle = 'rgba(255,255,255,.12)';
+  [RS, RM].forEach(r => { g.beginPath(); g.ellipse(cx, cy, r, r*tau, 0, 0, TAU); g.stroke(); }); g.setLineDash([]);
+  if (gap < .6){ g.strokeStyle = `rgba(255,220,150,${(1 - gap/.6)*.45})`; g.beginPath(); g.moveTo(S.x, S.y); g.lineTo(cx, cy); g.stroke(); }
+  const Le = nrm(Xs, Zs*tau, Zs*cph), Lm = nrm(Xs - Xm, (Zs - Zm)*tau, (Zs - Zm)*cph);
+  [{d: S.d, f: () => {
+    g.globalCompositeOperation = 'lighter'; glow(S.x, S.y, S.r*7, '255,160,50', .28 + .15*sm(14, 18, t)); glow(S.x, S.y, S.r*2.4, '255,225,140', .55);
+    const st = g.createLinearGradient(S.x - S.r*10, 0, S.x + S.r*10, 0); st.addColorStop(0, 'rgba(255,200,120,0)'); st.addColorStop(.5, 'rgba(255,220,160,.35)'); st.addColorStop(1, 'rgba(255,200,120,0)');
+    g.fillStyle = st; g.fillRect(S.x - S.r*10, S.y - DPR, S.r*20, 2*DPR);
+    g.globalCompositeOperation = 'source-over'; spr(sunTex, S.x, S.y, S.r, t*.03);
+  }}, {d: M.d, f: () => { g.globalCompositeOperation = 'source-over'; renderMoon(mCv, 128, Lm, .015); g.drawImage(mCv, M.x - M.r, M.y - M.r, 2*M.r, 2*M.r); }},
+  {d: 0, f: () => {
+    g.globalCompositeOperation = 'lighter'; glow(cx, cy, er*2.4, '70,140,255', .12); g.globalCompositeOperation = 'source-over';
+    renderEarth(eCv, 176, Le, t*.35); const q = er*1.12; g.drawImage(eCv, cx - q, cy - q, 2*q, 2*q);
+  }}].sort((a, b) => a.d - b.d).forEach(o => o.f());
+  g.globalCompositeOperation = 'source-over';
+}
+
+// ---------- cena 2: eclipse visto da Terra ----------
+function s2(a){
+  const rs = .19*m, rm = .196*m, sx = cx, sy = H*.36, dsx = (rs + rm)*1.25;
+  const x = cl((a - 1.5)/P2)*2 - 1, d = Math.sign(x)*dsx*Math.pow(Math.max(Math.abs(x) - .2, 0)/.8, 1.5);
+  const cover = overlap(d, rs, rm), k = Math.pow(cover, .7), C = sm(.97, 1, cover), tw = sm(.9, 1, cover);
+  g.globalCompositeOperation = 'source-over';
+  const sg = g.createLinearGradient(0, 0, 0, H*.9);
+  sg.addColorStop(0, `rgb(${[lerp(40, 3, k), lerp(100, 4, k), lerp(200, 10, k)].map(Math.round)})`); sg.addColorStop(1, `rgb(${[lerp(150, 6, k), lerp(195, 7, k), lerp(240, 14, k)].map(Math.round)})`);
+  g.fillStyle = sg; g.fillRect(0, 0, W, H); sky(a, Math.pow(cover, 4));
+  g.globalCompositeOperation = 'lighter';
+  const hz = g.createLinearGradient(0, H*.5, 0, H*.9); hz.addColorStop(0, 'rgba(255,120,50,0)'); hz.addColorStop(1, `rgba(255,130,60,${.6*tw})`); g.fillStyle = hz; g.fillRect(0, H*.5, W, H*.4);
+  glow(sx, sy, rs*4, '255,200,120', .55*(1 - cover*cover));
+  g.globalCompositeOperation = 'source-over'; spr(sunTex, sx, sy, rs, a*.02);
+  g.globalCompositeOperation = 'lighter'; glow(sx, sy, rs*1.3, '255,255,245', .75*(1 - cover)); glow(sx, sy, rs*7, '255,240,210', .22*(1 - cover));
+  const P6 = Math.pow(cover, 6);
+  if (P6 > .05) [[3.2, -1.1, 1.1], [-4.4, -1.8, .8]].forEach(([dx, dy, q]) => { glow(sx + dx*rs, sy + dy*rs, 7*DPR*q, '255,250,240', .5*P6); glow(sx + dx*rs, sy + dy*rs, 2*DPR*q, '255,255,255', .9*P6); });
+  if (C > 0){
+    g.globalAlpha = C; spr(corTex, sx, sy, 4*rs, a*.01); g.globalAlpha = C*.6; spr(corTex, sx, sy, 3.4*rs, .9 - a*.012); g.globalAlpha = 1;
+    g.lineWidth = 2*DPR; g.strokeStyle = `rgba(255,80,70,${.6*C})`; g.beginPath(); g.arc(sx, sy, rm*1.004, 0, TAU); g.stroke();
+    [[.6,.2],[2.3,.16],[4.1,.22],[5.2,.14]].forEach(([an, w]) => { g.lineWidth = 7*DPR; g.strokeStyle = `rgba(255,60,60,${.25*C})`; g.beginPath(); g.arc(sx, sy, rm*1.03, an, an + w); g.stroke(); g.lineWidth = 3*DPR; g.strokeStyle = `rgba(255,140,120,${.8*C})`; g.stroke(); });
+  }
+  g.globalCompositeOperation = 'source-over'; spr(moonFull, sx + d, sy, rm);
+  g.fillStyle = 'rgba(3,4,10,.94)'; g.beginPath(); g.arc(sx + d, sy, rm, 0, TAU); g.fill();
+  const fl = cl((cover - .9)/.1)*(1 - sm(.995, 1, cover));   // anel de diamante
+  if (fl > .01){ const bx = sx + (d < 0 ? rs : -rs)*.97; g.globalCompositeOperation = 'lighter'; glow(bx, sy, rs*(.5 + fl), '255,250,235', fl); glow(bx, sy, rs*.25, '255,255,255', fl); }
+  g.globalCompositeOperation = 'source-over';   // colinas no horizonte
+  g.fillStyle = `rgb(${[lerp(30, 2, k), lerp(55, 3, k), lerp(38, 6, k)].map(Math.round)})`; g.beginPath(); g.moveTo(0, H); hills.forEach(p => g.lineTo(p[0], p[1])); g.lineTo(W, H); g.closePath(); g.fill();
+}
+function overlap(d, r1, r2){   // fração do Sol coberta pela Lua
+  d = Math.abs(d); if (d >= r1 + r2) return 0;
+  if (d <= Math.abs(r1 - r2)) return Math.min(r1, r2)**2/(r1*r1);
+  const a = r1*r1*Math.acos((d*d + r1*r1 - r2*r2)/(2*d*r1)), b = r2*r2*Math.acos((d*d + r2*r2 - r1*r1)/(2*d*r2));
+  return (a + b - .5*Math.sqrt((-d + r1 + r2)*(d + r1 - r2)*(d - r1 + r2)*(d + r1 + r2)))/(Math.PI*r1*r1);
+}
+
+// ---------- legendas, texto, loop ----------
+const caps = [[.5,"O Sol e a Lua vivem em lados opostos do céu"],[5,"Quando um nasce, o outro se vai…"],[9,"Passam a eternidade se procurando"],[13,"Mas às vezes, o universo alinha tudo"],
+  [D1 + 2,"Um eclipse"],[D1 + 5,"Por alguns minutos, o dia vira noite…"],[TOT - .3,"e eles finalmente se encontram"],[TOT + 3,"E o dia volta a nascer"],[TOT + 7,""]];
+function setCap(txt){ cap.style.opacity = 0; setTimeout(() => { cap.textContent = txt; cap.style.opacity = txt ? 1 : 0; }, 300); }
+const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+function hl(src){
+  return src.split('\n').map(l => esc(l).replace(/(#.*$)|("[^"]*")|\b(for|in|if|while|def|return|else|not)\b|\b(True|False|None)\b|\b(print)\b/g,
+    (x, c, s, k, b, f) => c ? `<span class="c">${c}</span>` : s ? `<span class="s">${s}</span>` : k ? `<span class="k">${k}</span>` : b ? `<span class="b">${b}</span>` : `<span class="f">${f}</span>`)).join('\n');
+}
+function typeInto(box, text, done){
+  let n = 0; const id = setInterval(() => { n++; box.innerHTML = hl(text.slice(0, n)) + '<span class="cur"></span>'; if (n >= text.length){ clearInterval(id); done && done(); } }, 50);
+  return id;
+}
+function frame(now){
+  if (!running) return;
+  if (t0 === null) t0 = now;
+  const t = (now - t0)/1000;
+  while (capIdx < caps.length && t > caps[capIdx][0]) setCap(caps[capIdx++][1]);
+  if (t > TOT + 5.5 && !typer){ codeEl.classList.add('on'); typer = typeInto(pre, CODIGO, () => { again.style.opacity = 1; }); }
+  if (t < D1) s1(t); else s2(t - D1);
+  post();
+  const fa = t < D1 ? cl((t - (D1 - 1.3))/1.3) : 1 - cl((t - D1)/1.3);
+  if (fa > 0){ g.globalCompositeOperation = 'source-over'; g.globalAlpha = fa; g.fillStyle = '#03040a'; g.fillRect(0, 0, W, H); g.globalAlpha = 1; }
+  requestAnimationFrame(frame);
+}
+function play(){
+  clearInterval(typer); typer = null; capIdx = 0; t0 = null;
+  codeEl.classList.remove('on'); again.style.opacity = 0; pre.innerHTML = ''; cap.style.opacity = 0;
+  const was = running; running = true; if (!was) requestAnimationFrame(frame);
+}
+document.getElementById('go').onclick = () => { document.getElementById('start').style.display = 'none'; play(); };
+again.onclick = play;
+setTimeout(() => { init(); const b = document.getElementById('go'); b.disabled = false; b.textContent = 'COMEÇAR'; }, 80);
+</script>
+</body>
+</html>
